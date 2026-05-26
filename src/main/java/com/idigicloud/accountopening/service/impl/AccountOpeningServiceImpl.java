@@ -46,6 +46,11 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
+        if (user.getCbsCustomerId() == null) {
+            throw new InvalidOperationException(
+                    "User is not registered in CBS. Please contact support or re-register.");
+        }
+
         AccountOpeningRequest opening = AccountOpeningRequest.builder()
                 .productClass(request.getProductClass())
                 .customerType(request.getCustomerType())

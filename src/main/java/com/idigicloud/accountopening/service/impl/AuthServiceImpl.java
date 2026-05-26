@@ -89,7 +89,7 @@ public class AuthServiceImpl implements AuthService {
 
     /**
      * Creates customer in CBS and returns the CBS Customer ID.
-     * Falls back gracefully if CBS is unavailable during dev.
+     * Falls back to a timestamped dev ID if CBS is unavailable — never returns null.
      */
     private String registerInCbs(RegisterRequest request) {
         try {
@@ -105,9 +105,12 @@ public class AuthServiceImpl implements AuthService {
             if (response.has("data") && response.get("data").has("customerId")) {
                 return response.get("data").get("customerId").asText();
             }
+            // CBS returned success but no customerId — use a fallback dev ID
+            log.warn("CBS returned no customerId in response, using fallback dev ID");
+            return "CBS-DEV-" + System.currentTimeMillis();
         } catch (Exception e) {
-            log.warn("CBS registration failed, continuing without CBS ID: {}", e.getMessage());
+            log.warn("CBS registration failed, using fallback dev ID: {}", e.getMessage());
+            return "CBS-DEV-" + System.currentTimeMillis();
         }
-        return null;
     }
 }
