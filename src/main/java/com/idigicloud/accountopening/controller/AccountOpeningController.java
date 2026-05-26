@@ -28,7 +28,7 @@ public class AccountOpeningController {
 
     private final AccountOpeningService accountOpeningService;
 
-    // ✅ Injected as a Spring bean — NOT called statically anymore
+    // ✅ Injected as aa Spring bean — NOT called statically anymore
     private final SecurityContextUtil securityContextUtil;
 
     // ─── Step 1 ──────────────────────────────────────────────
