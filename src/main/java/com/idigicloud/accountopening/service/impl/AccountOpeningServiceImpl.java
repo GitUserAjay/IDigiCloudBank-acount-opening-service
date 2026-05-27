@@ -243,7 +243,9 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         }
 
         opening.setStatus(AccountOpeningStatus.SUBMITTED);
-        opening.setCurrentStep(7);
+        // Do NOT overwrite currentStep here — nominees already set it to 7.
+        // Step numbers: 1-7 are the wizard steps; 8 = SUBMITTED terminal state.
+        opening.setCurrentStep(8);
         return mapToResponse(requestRepository.save(opening));
     }
 
@@ -261,12 +263,16 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             throw new InvalidOperationException("No CBS account number found. Complete Step 3 first.");
         }
 
-        // Update CBS
+        // Update CBS — wrapped in try-catch so a transient CBS hiccup doesn't block funding
         Map<String, Object> payload = new HashMap<>();
         payload.put("accountNumber", opening.getCbsAccountNumber());
         payload.put("amount", request.getAmount());
         payload.put("fundingMode", request.getFundingMode());
-        cbsClient.updateInitialFunding(payload);
+        try {
+            cbsClient.updateInitialFunding(payload);
+        } catch (Exception e) {
+            log.warn("CBS initial funding sync failed (amount saved locally): {}", e.getMessage());
+        }
 
         opening.setInitialFundingAmount(request.getAmount());
         opening.setFundingMode(request.getFundingMode());
@@ -347,12 +353,25 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
 
             JsonNode response = cbsClient.openAccount(payload);
             if (response.has("data") && response.get("data").has("accountNumber")) {
-                return response.get("data").get("accountNumber").asText();
+                String accountNumber = response.get("data").get("accountNumber").asText();
+                if (accountNumber == null || accountNumber.isBlank()) {
+                    throw new InvalidOperationException(
+                            "CBS returned an empty account number. Check CBS service configuration.");
+                }
+                return accountNumber;
             }
+            // CBS returned 200 but the expected accountNumber field is missing
+            throw new InvalidOperationException(
+                    "CBS accepted the request but returned no account number in response. " +
+                            "Please ensure CBS service is running and properly configured.");
+        } catch (InvalidOperationException e) {
+            throw e; // re-throw our own business exceptions unchanged
         } catch (Exception e) {
-            log.warn("CBS openAccount failed: {}", e.getMessage());
+            log.error("CBS openAccount call failed: {}", e.getMessage());
+            throw new InvalidOperationException(
+                    "CBS account creation failed: " + e.getMessage() +
+                            ". Please ensure the CBS service is running on the configured URL.");
         }
-        return null;
     }
 
     private void syncNomineeToCbs(String accountNumber, NomineeRequest.NomineeDetail detail) {
