@@ -54,7 +54,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         AccountOpeningRequest opening = AccountOpeningRequest.builder()
                 .productClass(request.getProductClass())
                 .customerType(request.getCustomerType())
-                .branchCode(request.getBranchCode() != null ? request.getBranchCode() : user.getBranchCode())
+                .branchCode(request.getBranchCode() != null ? request.getBranchCode() : (user.getBranchCode() != null ? user.getBranchCode() : "UTIBOO134"))
                 .bankCode("AXB")
                 .currencyCode(request.getCurrencyCode())
                 .cbsCustomerId(user.getCbsCustomerId())
@@ -189,15 +189,13 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             throw new InvalidOperationException("Total nominee share percentage must equal 100. Current: " + totalShare);
         }
 
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd-MMM-yyyy");
-
         request.getNominees().forEach(detail -> {
             Nominee nominee = Nominee.builder()
                     .firstName(detail.getFirstName())
                     .middleName(detail.getMiddleName())
                     .lastName(detail.getLastName())
                     .gender(detail.getGender())
-                    .dateOfBirth(LocalDate.parse(detail.getDateOfBirth(), formatter))
+                    .dateOfBirth(parseFlexibleDate(detail.getDateOfBirth()))
                     .relationship(detail.getRelationship())
                     .sharePercentage(detail.getSharePercentage())
                     .mobileNumber(detail.getMobileNumber())
@@ -339,7 +337,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         try {
             Map<String, Object> payload = new HashMap<>();
             payload.put("customerId", opening.getCbsCustomerId());
-            payload.put("accountType", opening.getProductClass() == ProductClass.CASA ? "CASA" : opening.getProductClass().name());
+            payload.put("accountType", mapProductClassToCbsAccountType(opening.getProductClass()));
             payload.put("offerCode", opening.getOfferCode());
             payload.put("productCode", opening.getProductCode());
             payload.put("branchCode", opening.getBranchCode());
@@ -412,4 +410,26 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
                 .createdAt(r.getCreatedAt()).updatedAt(r.getUpdatedAt())
                 .build();
     }
+    private String mapProductClassToCbsAccountType(ProductClass productClass) {
+        if (productClass == null) return "CASA";
+        return switch (productClass) {
+            case CASA -> "CASA";
+            case TD   -> "TD";
+            case RD   -> "RD";
+            case LOAN -> "CASA";
+        };
+    }
+
+    private LocalDate parseFlexibleDate(String dateStr) {
+        if (dateStr == null || dateStr.isBlank()) {
+            throw new InvalidOperationException("Nominee date of birth is required");
+        }
+        try { return LocalDate.parse(dateStr); } catch (Exception ignored) {}
+        try { return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("dd-MMM-yyyy")); } catch (Exception ignored) {}
+        try { return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("d-MMM-yyyy")); } catch (Exception ignored) {}
+        try { return LocalDate.parse(dateStr, java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")); } catch (Exception ignored) {}
+        throw new InvalidOperationException("Cannot parse nominee date of birth: '" + dateStr + "'. Expected YYYY-MM-DD");
+    }
+
+
 }

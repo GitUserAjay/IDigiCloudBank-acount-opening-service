@@ -49,6 +49,7 @@ com\idigicloud\accountopening\security\filter\JwtAuthenticationFilter.class
 com\idigicloud\accountopening\repository\AccountDocumentRepository.class
 com\idigicloud\accountopening\dto\response\AccountOpeningResponse$AccountOpeningResponseBuilder.class
 com\idigicloud\accountopening\exception\handler\GlobalExceptionHandler.class
+com\idigicloud\accountopening\service\impl\AccountOpeningServiceImpl$1.class
 com\idigicloud\accountopening\config\SwaggerConfig.class
 com\idigicloud\accountopening\dto\request\NomineeRequest$NomineeDetail.class
 com\idigicloud\accountopening\util\SecurityContextUtil.class

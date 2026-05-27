@@ -30,6 +30,5 @@ public class RegisterRequest {
     @Pattern(regexp = "^[6-9]\\d{9}$", message = "Enter a valid 10-digit Indian mobile number")
     private String mobileNumber;
 
-    @NotBlank(message = "Branch code is required")
-    private String branchCode;
+    private String branchCode;  // optional — fallback to default branch if not provided
 }

@@ -60,7 +60,7 @@ public class AuthServiceImpl implements AuthService {
                 .mobileNumber(request.getMobileNumber())
                 .role(Role.ROLE_CUSTOMER)
                 .cbsCustomerId(cbsCustomerId)
-                .branchCode(request.getBranchCode())
+                .branchCode(request.getBranchCode() != null ? request.getBranchCode() : "UTIBOO134")
                 .isEnabled(true)
                 .build();
 
