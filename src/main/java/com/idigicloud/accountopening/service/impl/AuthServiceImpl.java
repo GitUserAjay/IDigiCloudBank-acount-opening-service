@@ -1,6 +1,8 @@
 package com.idigicloud.accountopening.service.impl;
 
 import com.idigicloud.accountopening.cbs.CbsClient;
+import com.idigicloud.accountopening.cbs.CbsServiceException;
+import com.idigicloud.accountopening.exception.InvalidOperationException;
 import com.idigicloud.accountopening.dto.request.LoginRequest;
 import com.idigicloud.accountopening.dto.request.RegisterRequest;
 import com.idigicloud.accountopening.dto.response.AuthResponse;
@@ -88,29 +90,61 @@ public class AuthServiceImpl implements AuthService {
     }
 
     /**
-     * Creates customer in CBS and returns the CBS Customer ID.
-     * Falls back to a timestamped dev ID if CBS is unavailable — never returns null.
+     * Creates customer in CBS and returns the CBS Customer ID (max 20 chars for users.cbs_customer_id).
      */
     private String registerInCbs(RegisterRequest request) {
-        try {
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("firstName", request.getFirstName());
-            payload.put("lastName", request.getLastName());
-            payload.put("email", request.getEmail());
-            payload.put("mobileNumber", request.getMobileNumber());
-            payload.put("branchCode", request.getBranchCode() != null ? request.getBranchCode() : "UTIBOO134");
-            payload.put("bankCode", "AXB");
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("firstName", request.getFirstName());
+        payload.put("lastName", request.getLastName());
+        payload.put("email", request.getEmail());
+        payload.put("mobileNumber", request.getMobileNumber());
+        payload.put("branchCode", request.getBranchCode() != null ? request.getBranchCode() : "UTIBOO134");
+        payload.put("bankCode", "AXB");
 
+        try {
             JsonNode response = cbsClient.createCustomer(payload);
-            if (response.has("data") && response.get("data").has("customerId")) {
-                return response.get("data").get("customerId").asText();
+            String customerId = extractCustomerId(response);
+            if (customerId != null) {
+                validateCbsCustomerIdLength(customerId);
+                return customerId;
             }
-            // CBS returned success but no customerId — use a fallback dev ID
-            log.warn("CBS returned no customerId in response, using fallback dev ID");
-            return "CBS-DEV-" + System.currentTimeMillis();
+        } catch (CbsServiceException e) {
+            log.warn("CBS create customer failed: {}", e.getMessage());
         } catch (Exception e) {
-            log.warn("CBS registration failed, using fallback dev ID: {}", e.getMessage());
-            return "CBS-DEV-" + System.currentTimeMillis();
+            log.warn("CBS create customer failed: {}", e.getMessage());
+        }
+
+        // Customer may already exist in CBS from a previous partial registration
+        try {
+            JsonNode searchResponse = cbsClient.searchCustomer("EMAIL", request.getEmail());
+            String existingId = extractCustomerId(searchResponse);
+            if (existingId != null) {
+                validateCbsCustomerIdLength(existingId);
+                log.info("Reusing existing CBS customer for email={}: {}", request.getEmail(), existingId);
+                return existingId;
+            }
+        } catch (Exception e) {
+            log.warn("CBS search by email failed: {}", e.getMessage());
+        }
+
+        throw new InvalidOperationException(
+                "Could not register customer in CBS. Please retry in a minute or contact support.");
+    }
+
+    private String extractCustomerId(JsonNode response) {
+        if (response != null && response.has("data") && response.get("data").has("customerId")) {
+            String customerId = response.get("data").get("customerId").asText();
+            if (customerId != null && !customerId.isBlank()) {
+                return customerId;
+            }
+        }
+        return null;
+    }
+
+    private void validateCbsCustomerIdLength(String customerId) {
+        if (customerId.length() > 20) {
+            throw new InvalidOperationException(
+                    "CBS customer ID is too long for local storage. Please contact support.");
         }
     }
 }
