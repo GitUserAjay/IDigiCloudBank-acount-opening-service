@@ -1,6 +1,7 @@
 package com.idigicloud.accountopening.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.idigicloud.accountopening.cbs.CbsServiceException;
 import com.idigicloud.accountopening.cbs.CbsClient;
 import com.idigicloud.accountopening.dto.request.*;
 import com.idigicloud.accountopening.dto.response.AccountOpeningResponse;
@@ -100,9 +101,6 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         AccountOpeningRequest opening = findById(request.getAccountOpeningRequestId());
         validateStep(opening, 2, "Relationship setup requires Step 2 to be completed");
 
-        // Call CBS to open account and get CBS account number
-        String cbsAccountNumber = openAccountInCbs(opening, request.getModeOfOperation());
-        opening.setCbsAccountNumber(cbsAccountNumber);
         opening.setModeOfOperation(request.getModeOfOperation());
         opening.setStatus(AccountOpeningStatus.RELATIONSHIP_SET);
         opening.setCurrentStep(3);
@@ -239,10 +237,11 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             cbsClient.activateAccount(opening.getCbsAccountNumber());
             log.info("CBS account activated: {}", opening.getCbsAccountNumber());
         } catch (Exception e) {
-            log.warn("CBS activation failed: {}", e.getMessage());
+            log.error("CBS activation failed for account {}: {}", opening.getCbsAccountNumber(), e.getMessage());
+            throw new CbsServiceException("CBS account activation failed. Please retry submission.");
         }
 
-        opening.setStatus(AccountOpeningStatus.SUBMITTED);
+        opening.setStatus(AccountOpeningStatus.KYC_VERIFIED);
         // Do NOT overwrite currentStep here — nominees already set it to 7.
         // Step numbers: 1-7 are the wizard steps; 8 = SUBMITTED terminal state.
         opening.setCurrentStep(8);
@@ -260,23 +259,26 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         AccountOpeningRequest opening = findById(request.getAccountOpeningRequestId());
 
         if (opening.getCbsAccountNumber() == null) {
-            throw new InvalidOperationException("No CBS account number found. Complete Step 3 first.");
+            String cbsAccountNumber = openAccountInCbs(opening, opening.getModeOfOperation());
+            opening.setCbsAccountNumber(cbsAccountNumber);
+            syncSavedNomineesToCbs(cbsAccountNumber, opening.getId());
         }
 
         // Update CBS — wrapped in try-catch so a transient CBS hiccup doesn't block funding
         Map<String, Object> payload = new HashMap<>();
-        payload.put("accountNumber", opening.getCbsAccountNumber());
+            payload.put("accountNumber", opening.getCbsAccountNumber());
         payload.put("amount", request.getAmount());
         payload.put("fundingMode", request.getFundingMode());
-        try {
+            try {
             cbsClient.updateInitialFunding(payload);
         } catch (Exception e) {
             log.warn("CBS initial funding sync failed (amount saved locally): {}", e.getMessage());
+                throw new CbsServiceException("CBS initial funding update failed. Please retry.");
         }
 
         opening.setInitialFundingAmount(request.getAmount());
         opening.setFundingMode(request.getFundingMode());
-        opening.setStatus(AccountOpeningStatus.KYC_VERIFIED);
+        opening.setStatus(AccountOpeningStatus.SUBMITTED);
 
         return mapToResponse(requestRepository.save(opening));
     }
@@ -364,13 +366,11 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             throw new InvalidOperationException(
                     "CBS accepted the request but returned no account number in response. " +
                             "Please ensure CBS service is running and properly configured.");
-        } catch (InvalidOperationException e) {
-            throw e; // re-throw our own business exceptions unchanged
+        } catch (CbsServiceException | InvalidOperationException e) {
+            throw e;
         } catch (Exception e) {
             log.error("CBS openAccount call failed: {}", e.getMessage());
-            throw new InvalidOperationException(
-                    "CBS account creation failed: " + e.getMessage() +
-                            ". Please ensure the CBS service is running on the configured URL.");
+            throw new CbsServiceException("CBS account creation failed. Please retry.");
         }
     }
 
@@ -382,7 +382,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             payload.put("middleName", detail.getMiddleName());
             payload.put("lastName", detail.getLastName());
             payload.put("gender", detail.getGender());
-            payload.put("dateOfBirth", detail.getDateOfBirth());
+            payload.put("dateOfBirth", parseFlexibleDate(detail.getDateOfBirth()).format(DateTimeFormatter.ofPattern("dd-MMM-yyyy")));
             payload.put("relationship", detail.getRelationship());
             payload.put("sharePercentage", detail.getSharePercentage());
             payload.put("mobileNumber", detail.getMobileNumber());
@@ -393,6 +393,33 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             cbsClient.addNominee(payload);
         } catch (Exception e) {
             log.warn("CBS nominee sync failed: {}", e.getMessage());
+        }
+    }
+
+    private void syncSavedNomineesToCbs(String accountNumber, Long accountOpeningRequestId) {
+        List<Nominee> nominees = nomineeRepository.findByAccountOpeningRequestId(accountOpeningRequestId);
+        for (Nominee nominee : nominees) {
+            try {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("accountNumber", accountNumber);
+                payload.put("firstName", nominee.getFirstName());
+                payload.put("middleName", nominee.getMiddleName());
+                payload.put("lastName", nominee.getLastName());
+                payload.put("gender", nominee.getGender());
+                payload.put("dateOfBirth", nominee.getDateOfBirth() != null
+                        ? nominee.getDateOfBirth().format(DateTimeFormatter.ofPattern("dd-MMM-yyyy"))
+                        : null);
+                payload.put("relationship", nominee.getRelationship());
+                payload.put("sharePercentage", nominee.getSharePercentage());
+                payload.put("mobileNumber", nominee.getMobileNumber());
+                payload.put("email", nominee.getEmail());
+                payload.put("addressLine1", nominee.getAddressLine1());
+                payload.put("country", nominee.getCountry());
+                payload.put("postalCode", nominee.getPostalCode());
+                cbsClient.addNominee(payload);
+            } catch (Exception ex) {
+                log.warn("CBS nominee sync failed for nomineeId={}: {}", nominee.getId(), ex.getMessage());
+            }
         }
     }
 
