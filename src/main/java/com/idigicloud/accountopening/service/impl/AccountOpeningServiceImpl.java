@@ -228,9 +228,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
 
         AccountOpeningRequest opening = findById(accountOpeningRequestId);
 
-        if (opening.getCbsAccountNumber() == null) {
-            throw new InvalidOperationException("Cannot submit: account number not assigned yet. Complete Step 3 first.");
-        }
+        ensureCbsAccountExists(opening);
 
         // Activate account in CBS
         try {
@@ -241,7 +239,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
             throw new CbsServiceException("CBS account activation failed. Please retry submission.");
         }
 
-        opening.setStatus(AccountOpeningStatus.KYC_VERIFIED);
+        opening.setStatus(AccountOpeningStatus.SUBMITTED);
         // Do NOT overwrite currentStep here — nominees already set it to 7.
         // Step numbers: 1-7 are the wizard steps; 8 = SUBMITTED terminal state.
         opening.setCurrentStep(8);
@@ -258,22 +256,18 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
 
         AccountOpeningRequest opening = findById(request.getAccountOpeningRequestId());
 
-        if (opening.getCbsAccountNumber() == null) {
-            String cbsAccountNumber = openAccountInCbs(opening, opening.getModeOfOperation());
-            opening.setCbsAccountNumber(cbsAccountNumber);
-            syncSavedNomineesToCbs(cbsAccountNumber, opening.getId());
-        }
+        ensureCbsAccountExists(opening);
 
-        // Update CBS — wrapped in try-catch so a transient CBS hiccup doesn't block funding
+        // Update CBS
         Map<String, Object> payload = new HashMap<>();
-            payload.put("accountNumber", opening.getCbsAccountNumber());
+        payload.put("accountNumber", opening.getCbsAccountNumber());
         payload.put("amount", request.getAmount());
         payload.put("fundingMode", request.getFundingMode());
-            try {
+        try {
             cbsClient.updateInitialFunding(payload);
         } catch (Exception e) {
             log.warn("CBS initial funding sync failed (amount saved locally): {}", e.getMessage());
-                throw new CbsServiceException("CBS initial funding update failed. Please retry.");
+            throw new CbsServiceException("CBS initial funding update failed. Please retry.");
         }
 
         opening.setInitialFundingAmount(request.getAmount());
@@ -339,6 +333,21 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
         if (opening.getCurrentStep() == null || opening.getCurrentStep() < expectedStep) {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private void ensureCbsAccountExists(AccountOpeningRequest opening) {
+        if (opening.getCbsAccountNumber() != null && !opening.getCbsAccountNumber().isBlank()) {
+            return;
+        }
+        if (opening.getModeOfOperation() == null || opening.getModeOfOperation().isBlank()) {
+            throw new InvalidOperationException("Mode of operation is required. Complete Step 3 (Relationship) first.");
+        }
+
+        String cbsAccountNumber = openAccountInCbs(opening, opening.getModeOfOperation());
+        opening.setCbsAccountNumber(cbsAccountNumber);
+        syncSavedNomineesToCbs(cbsAccountNumber, opening.getId());
+        requestRepository.save(opening);
+        log.info("CBS account {} assigned for requestId={}", cbsAccountNumber, opening.getId());
     }
 
     private String openAccountInCbs(AccountOpeningRequest opening, String modeOfOperation) {
