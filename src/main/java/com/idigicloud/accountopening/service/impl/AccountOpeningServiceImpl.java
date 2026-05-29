@@ -11,6 +11,7 @@ import com.idigicloud.accountopening.enums.ProductClass;
 import com.idigicloud.accountopening.exception.InvalidOperationException;
 import com.idigicloud.accountopening.exception.ResourceNotFoundException;
 import com.idigicloud.accountopening.repository.*;
+import com.idigicloud.accountopening.service.AccountCbsSyncService;
 import com.idigicloud.accountopening.service.AccountOpeningService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +36,7 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
     private final CoApplicantRepository coApplicantRepository;
     private final AccountDocumentRepository documentRepository;
     private final CbsClient cbsClient;
+    private final AccountCbsSyncService accountCbsSyncService;
 
     // ─────────────────────────────────────────────────────────
     //  STEP 1 — Initiate New Account
@@ -228,16 +230,17 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
 
         AccountOpeningRequest opening = findById(accountOpeningRequestId);
 
-        ensureCbsAccountExists(opening);
-
-        // Activate account in CBS
-        try {
-            cbsClient.activateAccount(opening.getCbsAccountNumber());
-            log.info("CBS account activated: {}", opening.getCbsAccountNumber());
-        } catch (Exception e) {
-            log.error("CBS activation failed for account {}: {}", opening.getCbsAccountNumber(), e.getMessage());
-            throw new CbsServiceException("CBS account activation failed. Please retry submission.");
+        if (opening.getStatus() == AccountOpeningStatus.SUBMITTED && opening.getCurrentStep() != null
+                && opening.getCurrentStep() >= 8) {
+            log.info("Application requestId={} already submitted", accountOpeningRequestId);
+            return mapToResponse(opening);
         }
+
+        ensureCbsAccountExists(opening);
+        opening = findById(accountOpeningRequestId);
+
+        cbsClient.activateAccount(opening.getCbsAccountNumber());
+        log.info("CBS account activated: {}", opening.getCbsAccountNumber());
 
         opening.setStatus(AccountOpeningStatus.SUBMITTED);
         // Do NOT overwrite currentStep here — nominees already set it to 7.
@@ -336,18 +339,20 @@ public class AccountOpeningServiceImpl implements AccountOpeningService {
     }
 
     private void ensureCbsAccountExists(AccountOpeningRequest opening) {
-        if (opening.getCbsAccountNumber() != null && !opening.getCbsAccountNumber().isBlank()) {
+        AccountOpeningRequest latest = findById(opening.getId());
+        if (latest.getCbsAccountNumber() != null && !latest.getCbsAccountNumber().isBlank()) {
+            opening.setCbsAccountNumber(latest.getCbsAccountNumber());
             return;
         }
-        if (opening.getModeOfOperation() == null || opening.getModeOfOperation().isBlank()) {
+        if (latest.getModeOfOperation() == null || latest.getModeOfOperation().isBlank()) {
             throw new InvalidOperationException("Mode of operation is required. Complete Step 3 (Relationship) first.");
         }
 
-        String cbsAccountNumber = openAccountInCbs(opening, opening.getModeOfOperation());
+        String cbsAccountNumber = openAccountInCbs(latest, latest.getModeOfOperation());
+        accountCbsSyncService.persistCbsAccountNumber(latest.getId(), cbsAccountNumber);
         opening.setCbsAccountNumber(cbsAccountNumber);
-        syncSavedNomineesToCbs(cbsAccountNumber, opening.getId());
-        requestRepository.save(opening);
-        log.info("CBS account {} assigned for requestId={}", cbsAccountNumber, opening.getId());
+        syncSavedNomineesToCbs(cbsAccountNumber, latest.getId());
+        log.info("CBS account {} assigned for requestId={}", cbsAccountNumber, latest.getId());
     }
 
     private String openAccountInCbs(AccountOpeningRequest opening, String modeOfOperation) {

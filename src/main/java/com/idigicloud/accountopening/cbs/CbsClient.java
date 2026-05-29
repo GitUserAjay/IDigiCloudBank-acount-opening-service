@@ -60,7 +60,8 @@ public class CbsClient {
     }
 
     public JsonNode activateAccount(String accountNumber) {
-        return patch("/api/v1/accounts/" + accountNumber + "/activate", null);
+        // POST is used because RestTemplate PATCH is unreliable on some JVM/runtime setups.
+        return post("/api/v1/accounts/" + accountNumber + "/activate", null);
     }
 
     public JsonNode updateInitialFunding(Map<String, Object> payload) {
@@ -112,10 +113,12 @@ public class CbsClient {
             headers.setContentType(MediaType.APPLICATION_JSON);
             HttpEntity<Object> entity = new HttpEntity<>(payload, headers);
             ResponseEntity<String> response = restTemplate.postForEntity(cbsBaseUrl + path, entity, String.class);
-            return objectMapper.readTree(response.getBody());
+            return requireSuccessResponse(objectMapper.readTree(response.getBody()));
         } catch (HttpClientErrorException e) {
             log.error("CBS POST error [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
-            return parseSafe(e.getResponseBodyAsString());
+            throw toCbsServiceException(e);
+        } catch (CbsServiceException e) {
+            throw e;
         } catch (Exception e) {
             log.error("CBS POST unexpected error: {}", e.getMessage());
             throw new CbsServiceException("CBS service unavailable. Please ensure CBS Mock is running on port 8081.");
@@ -130,12 +133,36 @@ public class CbsClient {
             HttpEntity<Object> entity = new HttpEntity<>(payload, headers);
             ResponseEntity<String> response = restTemplate.exchange(
                     cbsBaseUrl + path, HttpMethod.PATCH, entity, String.class);
-            return objectMapper.readTree(response.getBody());
+            return requireSuccessResponse(objectMapper.readTree(response.getBody()));
         } catch (HttpClientErrorException e) {
-            return parseSafe(e.getResponseBodyAsString());
+            log.error("CBS PATCH error [{}]: {}", e.getStatusCode(), e.getResponseBodyAsString());
+            throw toCbsServiceException(e);
+        } catch (CbsServiceException e) {
+            throw e;
         } catch (Exception e) {
+            log.error("CBS PATCH unexpected error: {}", e.getMessage());
             throw new CbsServiceException("CBS service unavailable.");
         }
+    }
+
+    private JsonNode requireSuccessResponse(JsonNode response) {
+        if (response != null && response.has("status") && "FAILURE".equalsIgnoreCase(response.get("status").asText())) {
+            String message = response.has("message") ? response.get("message").asText() : "CBS request failed";
+            throw new CbsServiceException(message);
+        }
+        return response;
+    }
+
+    private CbsServiceException toCbsServiceException(HttpClientErrorException e) {
+        try {
+            JsonNode body = objectMapper.readTree(e.getResponseBodyAsString());
+            if (body.has("message")) {
+                return new CbsServiceException(body.get("message").asText());
+            }
+        } catch (Exception ignored) {
+            // fall through to generic message
+        }
+        return new CbsServiceException("CBS request failed with status " + e.getStatusCode());
     }
 
     private JsonNode parseSafe(String json) {
